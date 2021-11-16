@@ -4,6 +4,7 @@ from aiohttp.helpers import reify
 from yarl import URL
 import re
 import json
+import gzip
 from parsel import Selector  # TODO make optional
 
 if TYPE_CHECKING:
@@ -31,7 +32,6 @@ class Response:
         self.method = method
         self.url = url
         self.headers = headers or {}
-        self.encoding = encoding
         self.request = request
         self.meta = meta or {}
         self._cache = {}
@@ -44,7 +44,7 @@ class Response:
     @reify
     def text(self):
         return self.content.decode(self.encoding)
-    
+
     @reify
     def tree(self):
         return Selector(text=self.text, base_url=str(self.url))
@@ -64,14 +64,22 @@ class Response:
         return json.loads(self.text)
 
     @classmethod
-    async def from_aiohttp(cls, response: ClientResponse):
+    async def from_aiohttp(cls, response: ClientResponse, decompress=True):
         content = await response.read()
+        encoding = response.get_encoding()
+        headers = response.headers
+        if decompress and headers.get("Content-Type") == "application/x-gzip":
+            content = gzip.decompress(content)
+
         return cls(
             url=response.url,
             status=response.status,
             content=content,
             method=response.method,
-            headers=response.headers,
-            encoding=response.get_encoding(),
+            headers=headers,
+            encoding=encoding,
             request=None,  # TODO
         )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.status} {self.url})"

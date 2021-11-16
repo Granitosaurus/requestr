@@ -63,7 +63,7 @@ class Request:
             self.data = data
             self.json = json
             self.cookies = cookies
-            self.headers = headers
+            self.headers = headers or {}
             self.skip_auto_headers = skip_auto_headers
             self.auth = auth
             self.allow_redirects = allow_redirects
@@ -83,3 +83,6 @@ class Request:
             self.proxy_headers = proxy_headers
             self.trace_request_ctx = trace_request_ctx
             self.read_buffsize = read_bufsize
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.method} {self.url})"

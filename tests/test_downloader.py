@@ -1,20 +1,24 @@
-import pytest
 import asyncio
+from os import stat
 import pickle
+from time import time
+
+import pytest
 from aiohttp import BasicAuth
+from aiohttp import TCPConnector
 from aiohttp.client_exceptions import ClientConnectionError
 from requestr import Request, Response, Session
-from requestr.downloader import Downloader
-from requestr.middlewares import Middleware
-from requestr.exceptions import RequestFailed, MwareRedirectLimit
-from requestr.middlewares import RetryStatuses
+from requestr.downloader import Downloader, DEFAULT_HEADERS
+from requestr.exceptions import MwareRedirectLimit, RequestFailed
+from requestr.middlewares import Middleware, RetryStatuses
+from yarl import URL
 
 
 @pytest.mark.asyncio
 async def test_downloader_html(httpbin):
-    dl = Downloader()
-    req = Request(httpbin.url + "/html")
-    resp = await dl.send(req)
+    async with Downloader() as dl:
+        req = Request(httpbin.url + "/html")
+        resp = await dl.send(req)
     assert req.url == resp.url
     assert resp.request is req
     assert resp.text
@@ -23,9 +27,9 @@ async def test_downloader_html(httpbin):
 
 @pytest.mark.asyncio
 async def test_downloader_200(httpbin):
-    dl = Downloader()
-    req = Request(httpbin.url + "/status/200")
-    resp = await dl.send(req)
+    async with Downloader() as dl:
+        req = Request(httpbin.url + "/status/200")
+        resp = await dl.send(req)
     assert isinstance(resp, Response)
     assert resp.status == 200
     assert resp.text == ""
@@ -34,39 +38,47 @@ async def test_downloader_200(httpbin):
 
 
 @pytest.mark.asyncio
-async def test_downloader_concurrent_request(httpbin):
+async def test_downloader_no_ctxmanager(httpbin):
     dl = Downloader()
-    default_slot = httpbin.url.split("://", 1)[1].split(":")[0]
-    resps = await asyncio.gather(
-        dl.send(Request(httpbin.url + "/status/200")),
-        dl.send(Request(httpbin.url + "/status/200")),
-        dl.send(Request(httpbin.url + "/status/200")),
-        dl.send(Request(httpbin.url + "/status/200")),
-        dl.send(Request(httpbin.url + "/status/200")),
-    )
-    assert len(resps) == 5
-    assert list(dl.sessions) == [default_slot]
-    assert dl.stats == {
-        "req/scheduled": 5,
-        "req/sent": 5,
-        "session/new": 1,
-    }
+    resp = await dl.send(Request(httpbin.url + "/status/200"))
+    assert resp
+    await dl.close()
 
-    dl = Downloader()
-    resps = await asyncio.gather(
-        dl.send(Request(httpbin.url + "/status/500")),
-        dl.send(Request(httpbin.url + "/status/500", slot="custom")),
-        dl.send(Request(httpbin.url + "/status/500")),
-        return_exceptions=True,
-    )
-    assert dl.stats == {
-        "req/scheduled": 3,
-        "req/sent": 9,
-        "req/retry": 6,
-        "sleep/elapsed": 12,
-        "respmid/return/req": 6,
-        "session/new": 2,
-    }
+
+@pytest.mark.asyncio
+async def test_downloader_concurrent_request(httpbin):
+    async with Downloader() as dl:
+        default_slot = httpbin.url.split("://", 1)[1].split(":")[0]
+        resps = await asyncio.gather(
+            dl.send(Request(httpbin.url + "/status/200")),
+            dl.send(Request(httpbin.url + "/status/200")),
+            dl.send(Request(httpbin.url + "/status/200")),
+            dl.send(Request(httpbin.url + "/status/200")),
+            dl.send(Request(httpbin.url + "/status/200")),
+        )
+        assert len(resps) == 5
+        assert list(dl.sessions) == [default_slot]
+        assert {
+            "req/scheduled": 5,
+            "req/sent": 5,
+            "session/new": 1,
+        }.items() <= dl.stats.items()
+
+    async with Downloader() as dl:
+        resps = await asyncio.gather(
+            dl.send(Request(httpbin.url + "/status/500")),
+            dl.send(Request(httpbin.url + "/status/500", slot="custom")),
+            dl.send(Request(httpbin.url + "/status/500")),
+            return_exceptions=True,
+        )
+        assert {
+            "req/scheduled": 3,
+            "req/sent": 9,
+            "req/retry": 6,
+            "sleep/elapsed": 12,
+            "respmid/return/req": 6,
+            "session/new": 2,
+        }.items() <= dl.stats.items()
 
 
 @pytest.mark.asyncio
@@ -87,7 +99,7 @@ async def test_downloader_session_select(httpbin):
 async def test_downloader_default_custom_fail(httpbin):
     dl = Downloader()
     with pytest.raises(RequestFailed):
-        resp = await dl.send(Request(httpbin.url + "/status/404"), mwares={0: RetryStatuses((404, 500))})
+        resp = await dl.send(Request(httpbin.url + "/status/404"), mwares={0: RetryStatuses(404, 500)})
     assert dl.stats == {
         "req/retry": 2,
         "req/scheduled": 1,
@@ -121,6 +133,7 @@ async def test_downloader_status_fail_with_default_mwares(httpbin):
         "sleep/elapsed": 4,
     }
 
+
 @pytest.mark.asyncio
 async def test_downloader_exc_fail():
     # default behavior is to raise all exceptions
@@ -131,6 +144,7 @@ async def test_downloader_exc_fail():
         "req/scheduled": 1,
         "session/new": 1,
     }
+
 
 @pytest.mark.asyncio
 async def test_downloader_exc_fail_with_default_mwares():
@@ -146,6 +160,7 @@ async def test_downloader_exc_fail_with_default_mwares():
         "session/new": 1,
     }
 
+
 @pytest.mark.asyncio
 async def test_downloader_proxy(httpbin):
     dl = Downloader()
@@ -153,8 +168,8 @@ async def test_downloader_proxy(httpbin):
     resp = await dl.send(
         Request(
             "http://httpbin.org/ip",
-            proxy="http://209.127.191.180:9279",
-            proxy_auth=BasicAuth("zexfwvoa", "msg7udkifi4j"),
+            proxy=PROXY_URL,
+            proxy_auth=PROXY_AUTH,
         )
     )
     assert resp.json == {"origin": "209.127.191.180"}
@@ -166,6 +181,7 @@ async def test_downloader_proxy(httpbin):
     )
     assert resp.json != {"origin": "209.127.191.180"}
 
+
 @pytest.mark.asyncio
 async def test_downloader_middleware_stop(httpbin):
     dl = Downloader()
@@ -175,21 +191,74 @@ async def test_downloader_middleware_stop(httpbin):
             return req
 
     with pytest.raises(MwareRedirectLimit):
-        resp = await dl.send(Request(httpbin + '/html'),mwares={0: EndlessReqMiddleware()})
+        resp = await dl.send(Request(httpbin + "/html"), mwares={0: EndlessReqMiddleware()})
 
     class EndlessRespMiddleware(Middleware):
         async def response(self, resp: Response, req: Request, session: Session, dl: "Downloader", **meta):
             return req
 
     with pytest.raises(MwareRedirectLimit):
-        resp = await dl.send(Request(httpbin + '/html'),mwares={0: EndlessRespMiddleware()})
+        resp = await dl.send(Request(httpbin + "/html"), mwares={0: EndlessRespMiddleware()})
 
 
 @pytest.mark.asyncio
 async def test_downloader_pickling(httpbin):
     """pickling shouldn't work with active sessions"""
-    dl = Downloader()
-    assert pickle.dumps(dl)
-    await dl.send(Request(httpbin + '/html'))
-    with pytest.raises(TypeError):
+    async with Downloader() as dl:
         assert pickle.dumps(dl)
+        await dl.send(Request(httpbin + "/html"))
+        with pytest.raises(TypeError):
+            assert pickle.dumps(dl)
+
+
+@pytest.mark.asyncio
+async def test_downloader_redirect(httpbin):
+    """pickling shouldn't work with active sessions"""
+    dl = Downloader()
+    pass
+
+
+@pytest.mark.asyncio
+async def test_downloader_limiter(httpbin):
+    async with Downloader() as dl:
+        await dl.new_session(URL(httpbin + "/").host, limit=2)  # 0.5 req/sec or 30 req/min
+        start = time()
+        results = await asyncio.gather(*[dl.send(Request(httpbin + "/html")) for i in range(10)])
+        assert len(results) == 10
+        elapsed = time() - start
+        assert 4 < elapsed < 5
+
+@pytest.mark.asyncio
+async def test_downloader_session_default_headers(httpbin):
+    async with Downloader() as dl:
+        resp = await dl.send(Request(httpbin + "/headers"))
+        assert DEFAULT_HEADERS.items() <= resp.json["headers"].items() 
+
+@pytest.mark.asyncio
+async def test_downloader_session_custom_headers(httpbin):
+    async with Downloader() as dl:
+        await dl.new_session(URL(httpbin + "/").host, headers={"foo": "bar"})
+        resp = await dl.send(Request(httpbin + "/headers"))
+        assert resp.json['headers']["Foo"] == "bar"
+
+        await dl.new_session(URL(httpbin + "/").host, headers={"foo": "gaz"})
+        resp = await dl.send(Request(httpbin + "/headers"))
+        assert resp.json['headers']["Foo"] == "gaz"
+
+
+@pytest.mark.asyncio
+async def test_downloader_session_cookies(httpbin):
+    dl = Downloader()
+    # TODO: for some reason this doesn't work with pytest-httpbin server?
+    httpbin = "http://httpbin.org"
+    _resp = await dl.send(Request(httpbin + "/cookies/set/my_cookie/foobar"))
+    resp = await dl.send(Request(httpbin + "/cookies"))
+    assert resp.json["cookies"] == {"my_cookie": "foobar"}
+
+    # ensure new slot is not using existing cookies
+    resp = await dl.send(Request(httpbin + "/cookies", slot="new"))
+    assert resp.json["cookies"] == {}
+
+    # ensure explicit existing slot works
+    resp = await dl.send(Request(httpbin + "/cookies", slot=_resp.request.slot))
+    assert resp.json["cookies"] == {"my_cookie": "foobar"}

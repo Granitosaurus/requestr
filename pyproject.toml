@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "requestr"
-version = "0.1.0"
+version = "0.1.1"
 description = "request download manager"
 authors = ["Bernardas Alisauskas <bernardas.alisauskas@pm.me>"]
 license = "GPLv3"
@@ -9,12 +9,22 @@ license = "GPLv3"
 python = "^3.9"
 httpx = "^0.19.0"
 aiohttp = {extras = ["speedup"], version = "^3.7.4"}
+parsel = "^1.6.0"
+loguru = "^0.5.3"
+aiolimiter = "^1.0.0-beta.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
 pytest-httpbin = "^1.0.0"
 pytest-asyncio = "^0.15.1"
 parsel = "^1.6.0"
+flake8 = "^3.9.2"
+black = "^21.9b0"
+pytest-mock = "^3.6.1"
+mock = "^4.0.3"
+
+[tool.pytest.ini_options]
+mock_use_standalone_module = true
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
