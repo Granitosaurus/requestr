@@ -20,6 +20,7 @@ class HNCommentsScraper:
     async def __aenter__(self):
         """starts some stats on"""
         self.stats["start"] = time()
+        await self.dl.open()
         return self
 
     async def __aexit__(self, *args, **kwargs):
